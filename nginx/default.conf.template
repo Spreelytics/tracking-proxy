@@ -1,0 +1,48 @@
+# Looks Spreelytics' hosts up again every minute, since their IP addresses change.
+resolver ${NGINX_LOCAL_RESOLVERS} valid=60s ipv6=off;
+server_tokens off;
+
+server {
+  listen ${PORT};
+
+  # Open the proxy's address in a browser to check it's running.
+  location = / {
+    default_type text/plain;
+    return 200 "Spreelytics proxy is running\n";
+  }
+
+  # The script files: the loader, the SDK and session replay.
+  # Same paths as Spreelytics' own hosts, so a snippet only changes its hostname.
+  location ^~ /cdn/sdk/ {
+    set $spreelytics_cdn cdn.spreelytics.com;
+    proxy_pass https://$spreelytics_cdn;
+    proxy_http_version 1.1;
+    proxy_set_header Host $spreelytics_cdn;
+    proxy_ssl_server_name on;
+    proxy_ssl_verify on;
+    proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+    proxy_ssl_verify_depth 3;
+    # Your site's cookies stay on your site, and Spreelytics' load balancer sets none on your domain.
+    proxy_set_header Cookie "";
+    proxy_hide_header Set-Cookie;
+  }
+
+  # The tracking requests, with each visitor's IP address added to X-Forwarded-For.
+  location ^~ /1.0/ {
+    set $spreelytics_api sdk.spreelytics.com;
+    proxy_pass https://$spreelytics_api;
+    proxy_http_version 1.1;
+    proxy_set_header Host $spreelytics_api;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_ssl_server_name on;
+    proxy_ssl_verify on;
+    proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
+    proxy_ssl_verify_depth 3;
+    proxy_set_header Cookie "";
+    proxy_hide_header Set-Cookie;
+  }
+
+  location / {
+    return 404;
+  }
+}

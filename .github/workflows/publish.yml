@@ -1,0 +1,139 @@
+name: Build and publish
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  # Weekly rebuild of the newest release, so nginx and Alpine security fixes reach every tag.
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GHCR_IMAGE: ghcr.io/spreelytics/tracking-proxy
+  DOCKERHUB_IMAGE: docker.io/spreelytics/tracking-proxy
+
+jobs:
+  # Which commit to build. A release tag builds itself; the weekly and manual runs rebuild the newest
+  # release tag, so `latest`, `1`, `1.2` and `1.2.3` all pick up the new base image.
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+      version: ${{ steps.ref.outputs.version }}
+      publish: ${{ steps.ref.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: ref
+        run: |
+          case "${GITHUB_EVENT_NAME}:${GITHUB_REF}" in
+            push:refs/tags/v*)
+              tag="${GITHUB_REF#refs/tags/}"
+              echo "ref=$tag" >> "$GITHUB_OUTPUT"
+              echo "version=$tag" >> "$GITHUB_OUTPUT"
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              ;;
+            schedule:*|workflow_dispatch:*)
+              tag=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n 1)
+              if [ -z "$tag" ]; then
+                echo "No release tag yet, nothing to rebuild."
+                echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+                echo "publish=false" >> "$GITHUB_OUTPUT"
+              else
+                echo "Rebuilding $tag"
+                echo "ref=$tag" >> "$GITHUB_OUTPUT"
+                echo "version=$tag" >> "$GITHUB_OUTPUT"
+                echo "publish=true" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            *)
+              echo "ref=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+  smoke-test:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          pull: true
+          tags: spreelytics/tracking-proxy:test
+      - name: Smoke test
+        run: ./scripts/smoke-test.sh spreelytics/tracking-proxy:test
+
+  publish:
+    needs: [resolve, smoke-test]
+    if: needs.resolve.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GHCR_IMAGE }}
+            ${{ env.DOCKERHUB_IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.resolve.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.resolve.outputs.version }}
+            type=semver,pattern={{major}},value=${{ needs.resolve.outputs.version }}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          pull: true
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Update the Docker Hub description
+        if: github.event_name == 'push'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: spreelytics/tracking-proxy
+          short-description: Serve Spreelytics analytics from your own domain, so fewer visitors go uncounted.
+          readme-filepath: ./README.md
