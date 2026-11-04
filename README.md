@@ -56,7 +56,7 @@ If everyone shows up in the same place, see [Troubleshooting](#troubleshooting).
 
 ## Deploy it
 
-Use `ghcr.io/spreelytics/tracking-proxy:1` in production. It's also on Docker Hub as `spreelytics/tracking-proxy:1`. The `1` tag gets every 1.x update and is rebuilt weekly with security fixes, but never a change that would break your setup. A running proxy picks up a new build when it restarts and pulls the image again, so redeploy it now and then.
+Use `ghcr.io/spreelytics/tracking-proxy:1` in production. It's also on Docker Hub as `spreelytics/tracking-proxy:1`. 
 
 ### Kubernetes
 
@@ -101,7 +101,7 @@ spec:
 
 If your cluster requires `readOnlyRootFilesystem`, mount an `emptyDir` on `/etc/nginx/conf.d` and on `/tmp`. The example file already does.
 
-To pick up the weekly security build, restart the proxy now and then:
+To pick up security rebuilds, restart the proxy now and then:
 
 ```bash
 kubectl rollout restart deployment/spreelytics-proxy
